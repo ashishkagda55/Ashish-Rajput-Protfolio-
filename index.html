@@ -281,6 +281,9 @@ nav ul a:hover::after{transform:scaleX(1);transform-origin:left}
 .lb.loading .lb-spin{display:block}
 @keyframes spin{to{transform:rotate(360deg)}}
 .lb video{max-width:100%;max-height:78vh;border-radius:18px;background:#000;box-shadow:0 40px 80px -20px rgba(0,0,0,.7)}
+.lb-fail{display:none;max-width:420px;margin:18px auto 0;text-align:center;color:#fff;font-size:15px;line-height:1.5;background:rgba(240,68,74,.25);border:1px solid rgba(240,68,74,.6);border-radius:14px;padding:14px 18px}
+.lb.failed .lb-fail{display:block}
+.lb.failed .lb-stage{display:none}
 .lb-cap{color:#fff;text-align:center;margin-top:16px}
 .lb-cap b{font-family:var(--display);font-size:22px;display:block}
 .lb-cap span{color:#B9B0D6;font-size:15px}
@@ -595,7 +598,8 @@ footer .wrap{display:flex;justify-content:space-between;gap:calc(20*var(--u));fl
 <div class="lb" id="lb" data-lenis-prevent role="dialog" aria-modal="true" aria-label="Project video" hidden>
   <button class="lb-close" id="lbClose" aria-label="Close video">×</button>
   <button class="lb-nav prev" id="lbPrev" aria-label="Previous project">‹</button>
-  <div class="lb-box"><div class="lb-stage"><video id="lbVideo" controls playsinline preload="auto"></video><span class="lb-spin" id="lbSpin" aria-hidden="true"></span></div><div class="lb-cap"><b id="lbTitle"></b><span id="lbCat"></span></div></div>
+  <div class="lb-box"><div class="lb-stage"><video id="lbVideo" controls playsinline preload="auto"></video><span class="lb-spin" id="lbSpin" aria-hidden="true"></span></div><p class="lb-fail" id="lbFail">This video can’t play in this browser. Open the portfolio in Chrome, or message me on WhatsApp and I’ll send the file.</p>
+  <div class="lb-cap"><b id="lbTitle"></b><span id="lbCat"></span></div></div>
   <button class="lb-nav next" id="lbNext" aria-label="Next project">›</button>
 </div>
 
@@ -932,12 +936,13 @@ footer .wrap{display:flex;justify-content:space-between;gap:calc(20*var(--u));fl
   /* ---------- lazy video sources (decoded only when needed) ---------- */
   const vCache = {};
   function whenReady(){ return document.readyState === 'loading' ? new Promise(r=>document.addEventListener('DOMContentLoaded',r,{once:true})) : Promise.resolve(); }
-  window.videoURL = function(key, fallback){
-    if(fallback) return Promise.resolve(fallback);
+  window.videoSources = function(key, fallback){
+    if(fallback) return Promise.resolve([fallback]);
     if(!vCache[key]) vCache[key] = whenReady().then(()=>new Promise(res=>{
       const el = document.getElementById('vd-'+key);
-      if(!el){ res(''); return; }
-      const b64 = el.textContent.replace(/\s+/g,''); el.textContent = '';
+      if(!el){ res([]); return; }
+      const b64 = el.textContent.replace(/\s+/g,'');
+      const dataURL = 'data:video/mp4;base64,' + b64;
       const CH = 262144; // 256 KB of base64 per slice keeps every task short
       const parts = []; let pos = 0;
       (function step(){
@@ -948,7 +953,11 @@ footer .wrap{display:flex;justify-content:space-between;gap:calc(20*var(--u));fl
           parts.push(arr); pos += CH;
         }
         if(pos < b64.length) setTimeout(step, 0);
-        else res(URL.createObjectURL(new Blob(parts,{type:'video/mp4'})));
+        else {
+          let blobURL = '';
+          try{ blobURL = URL.createObjectURL(new Blob(parts,{type:'video/mp4'})); }catch(e){}
+          res(blobURL ? [blobURL, dataURL] : [dataURL]);
+        }
       })();
     }));
     return vCache[key];
@@ -1313,17 +1322,28 @@ footer .wrap{display:flex;justify-content:space-between;gap:calc(20*var(--u));fl
     }
   }
   const lbV = document.getElementById('lbVideo');
-  ['playing','canplay','error'].forEach(ev=>lbV.addEventListener(ev,()=>lb.classList.remove('loading')));
+  ['playing','canplay','loadeddata'].forEach(ev=>lbV.addEventListener(ev,()=>{ lb.classList.remove('loading'); lb.classList.remove('failed'); }));
+  lbV.addEventListener('error',()=>{ if(srcAt < srcList.length - 1) nextSource(); else { lb.classList.remove('loading'); lb.classList.add('failed'); } });
   const lbT = document.getElementById('lbTitle'), lbC = document.getElementById('lbCat');
-  let lbIdx = 0, lastFocus = null;
+  let lbIdx = 0, lastFocus = null, srcList = [], srcAt = -1;
+  function nextSource(){
+    srcAt++;
+    if(srcAt >= srcList.length){ lb.classList.remove('loading'); lb.classList.add('failed'); return; }
+    lbV.src = srcList[srcAt];
+    lbV.load(); lbV.muted = false;
+    const pr = lbV.play(); if(pr) pr.catch(()=>{ lb.classList.remove('loading'); });
+  }
   function load(i){
     lbIdx = (i + projs.length) % projs.length;
     const p = projs[lbIdx], v = p.querySelector('video');
     lbV.poster = v.getAttribute('poster'); lbV.removeAttribute('src');
     lbT.textContent = p.dataset.title; lbC.textContent = p.dataset.cat;
     const want = lbIdx;
-    lb.classList.add('loading');
-    window.videoURL(p.dataset.key, v.dataset.vsrc).then(u=>{ if(want !== lbIdx || lb.hidden) return; lbV.src = u; lbV.muted = false; const pr = lbV.play(); if(pr) pr.catch(()=>{}); });
+    lb.classList.add('loading'); lb.classList.remove('failed');
+    window.videoSources(p.dataset.key, v.dataset.vsrc).then(list=>{
+      if(want !== lbIdx || lb.hidden) return;
+      srcList = list.slice(); srcAt = -1; nextSource();
+    });
   }
   function openLb(i){
     lastFocus = document.activeElement;
